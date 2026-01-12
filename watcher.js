@@ -7,7 +7,6 @@ const URL =
 const STATE_FILE = "state.json";
 const MAX_POST = 5;
 
-// jen aby se nic nerozbilo na //cdn... apod.
 function normalize(url) {
   if (!url) return null;
   if (url.startsWith("//")) return "https:" + url;
@@ -62,20 +61,19 @@ async function sendToDiscord(webhook, items) {
 
   await page.goto(URL, { waitUntil: "domcontentloaded" });
 
-  // Počkáme, až se načtou thumbnails (JS + lazy load)
-  // Cíl: na stránce musí být několik "velkých" img (grid)
-  await page.waitForFunction(() => {
-    const imgs = Array.from(document.querySelectorAll("img"));
-    let big = 0;
-    for (const img of imgs) {
-      const r = img.getBoundingClientRect();
-      if (r.width >= 120 && r.height >= 120) big++;
-      if (big >= 8) return true; // když vidíme aspoň 8 velkých thumbů, grid je ready
-    }
-    return false;
-  }, { timeout: 25000 }).catch(() => {});
+  // počkej chvilku, ať JS nahodí grid (bez scrollu, jen krátká pauza)
+  await page.waitForTimeout(2500);
 
-  // Vytáhneme jen grid karty: velké thumbnails + jejich nejbližší <a>
+  // DEBUG: základní info o stránce / DOM
+  const domStats = await page.evaluate(() => {
+    const imgs = document.querySelectorAll("img").length;
+    const links = document.querySelectorAll("a[href]").length;
+    return { imgs, links, title: document.title };
+  });
+  console.log("DEBUG: page title =", domStats.title);
+  console.log("DEBUG: DOM counts =", domStats);
+
+  // Vytáhneme jen grid karty: velké <img> + nejbližší <a>
   const items = await page.evaluate(() => {
     const uniq = new Map();
 
@@ -90,7 +88,7 @@ async function sendToDiscord(webhook, items) {
 
       const href = a.getAttribute("href") || "";
 
-      // chceme jen detail setu (ne search/kategorie)
+      // jen detail setu (ne kategorie/search)
       const isSetDetail =
         href.includes("/photo_sets/show/") ||
         href.includes("/photo_sets/show/id/") ||
@@ -110,15 +108,17 @@ async function sendToDiscord(webhook, items) {
         img.getAttribute("data-original") ||
         null;
 
-      if (!uniq.has(href)) {
-        uniq.set(href, { url: href, title, image });
-      }
+      if (!uniq.has(href)) uniq.set(href, { url: href, title, image });
     }
 
     return Array.from(uniq.values());
   });
 
   await browser.close();
+
+  // DEBUG: co jsme našli surově
+  console.log("DEBUG: raw items found =", items.length);
+  console.log("DEBUG: sample raw (first 10) =", items.slice(0, 10));
 
   const cleaned = items
     .map((i) => ({
@@ -128,11 +128,16 @@ async function sendToDiscord(webhook, items) {
     }))
     .filter((i) => i.url);
 
-  // Nejnovější bývají nahoře – vezmeme horní kus
+  // nejnovější bývají nahoře
   const top = cleaned.slice(0, 40);
 
-  // nové = co ještě nebylo viděno
+  // DEBUG: po čištění
+  console.log("DEBUG: cleaned =", cleaned.length);
+  console.log("DEBUG: top URLs (first 10) =", top.slice(0, 10).map((x) => x.url));
+  console.log("DEBUG: seen size =", seen.size);
+
   const fresh = top.filter((i) => !seen.has(i.url)).slice(0, MAX_POST);
+  console.log("DEBUG: fresh count =", fresh.length);
 
   if (fresh.length === 0) {
     console.log("No new items.");
@@ -142,7 +147,6 @@ async function sendToDiscord(webhook, items) {
   console.log("Posting:", fresh.map((x) => x.url));
   await sendToDiscord(webhook, fresh);
 
-  // uložíme jako “seen”
   const newSeen = [...fresh.map((x) => x.url), ...seenList];
   const dedup = Array.from(new Set(newSeen)).slice(0, 1000);
   saveState(dedup);
