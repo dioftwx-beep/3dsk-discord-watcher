@@ -1,0 +1,12 @@
+{
+  "name": "3dsk-discord-watcher",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "node watcher.js"
+  },
+  "dependencies": {
+    "playwright": "^1.49.0"
+  }
+}
