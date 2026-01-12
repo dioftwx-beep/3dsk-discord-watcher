@@ -60,65 +60,46 @@ async function sendToDiscord(webhook, items) {
   const page = await browser.newPage({ viewport: { width: 1400, height: 900 } });
 
   await page.goto(URL, { waitUntil: "domcontentloaded" });
+  await page.waitForTimeout(2500); // jen aby JS stihl domalovat
 
-  // Dáme gridu čas a "probudíme" lazy-load jen MALÝM scroll (ne celá stránka)
-  await page.waitForTimeout(2000);
-  await page.mouse.wheel(0, 900);
-  await page.waitForTimeout(1200);
-  await page.mouse.wheel(0, 900);
-  await page.waitForTimeout(1200);
+  // DEBUG: kde reálně jsme (redirecty apod.)
+  console.log("DEBUG: final URL =", page.url());
 
-  // DEBUG: DOM základ
-  const domStats = await page.evaluate(() => {
-    const imgs = document.querySelectorAll("img").length;
-    const links = document.querySelectorAll("a[href]").length;
-    return { imgs, links, title: document.title };
+  // DEBUG: základní signály (login / blocked)
+  const flags = await page.evaluate(() => {
+    const html = document.documentElement?.innerText || "";
+    const hasLoginWord =
+      /login|sign up|přihlásit|prihlásit/i.test(html);
+    const title = document.title;
+    return { title, hasLoginWord, textSample: html.slice(0, 250) };
   });
-  console.log("DEBUG: page title =", domStats.title);
-  console.log("DEBUG: DOM counts =", domStats);
+  console.log("DEBUG: page title =", flags.title);
+  console.log("DEBUG: has login/blocked words =", flags.hasLoginWord);
+  console.log("DEBUG: text sample =", JSON.stringify(flags.textSample));
 
-  // Extraction: bereme "karty" tak, že hledáme prvky s velkým pozadím nebo velkým img
+  // 1) Sebereme všechny odkazy, které vypadají jako DETAIL SETU
   const items = await page.evaluate(() => {
     const uniq = new Map();
 
-    function pickBgImage(el) {
-      const cs = window.getComputedStyle(el);
-      const bg = cs.backgroundImage || "";
-      // url("...") nebo url(...)
-      const m = bg.match(/url\(["']?(.*?)["']?\)/i);
-      return m ? m[1] : null;
+    const anchors = Array.from(document.querySelectorAll("a[href]"));
+
+    function pickImageFromAnchor(a) {
+      const img = a.querySelector("img");
+      if (!img) return null;
+      return (
+        img.getAttribute("src") ||
+        img.getAttribute("data-src") ||
+        img.getAttribute("data-lazy") ||
+        img.getAttribute("data-original") ||
+        null
+      );
     }
 
-    function isBig(r) {
-      return r && r.width >= 140 && r.height >= 140;
-    }
-
-    // Kandidáti 1: velké IMG
-    const imgCandidates = Array.from(document.querySelectorAll("img"))
-      .map(img => ({ el: img, r: img.getBoundingClientRect() }))
-      .filter(x => isBig(x.r))
-      .map(x => x.el);
-
-    // Kandidáti 2: velké DIVy se background-image (grid často takhle)
-    const bgCandidates = Array.from(document.querySelectorAll("div, a, span"))
-      .map(el => ({ el, r: el.getBoundingClientRect() }))
-      .filter(x => isBig(x.r))
-      .filter(x => {
-        const cs = window.getComputedStyle(x.el);
-        return cs && cs.backgroundImage && cs.backgroundImage.includes("url(");
-      })
-      .map(x => x.el);
-
-    const candidates = [...new Set([...imgCandidates, ...bgCandidates])];
-
-    for (const el of candidates) {
-      // najdi nejbližší link
-      const a = el.closest("a[href]");
-      if (!a) continue;
-
+    for (const a of anchors) {
       const href = a.getAttribute("href") || "";
+      if (!href) continue;
 
-      // filtr: jen detail setu (ne search/kategorie)
+      // jen detail setu, ne search/kategorie
       const isSetDetail =
         href.includes("/photo_sets/show/") ||
         href.includes("/photo_sets/show/id/") ||
@@ -126,28 +107,14 @@ async function sendToDiscord(webhook, items) {
 
       if (!isSetDetail) continue;
 
-      // title: title attribute nebo text z okolí
       const title =
         (a.getAttribute("title") || "").trim() ||
         (a.innerText || "").replace(/\s+/g, " ").trim() ||
         null;
 
-      // image: z img src nebo z background-image
-      let image = null;
-      if (el.tagName && el.tagName.toLowerCase() === "img") {
-        image =
-          el.getAttribute("src") ||
-          el.getAttribute("data-src") ||
-          el.getAttribute("data-lazy") ||
-          el.getAttribute("data-original") ||
-          null;
-      } else {
-        image = pickBgImage(el);
-      }
+      const image = pickImageFromAnchor(a);
 
-      if (!uniq.has(href)) {
-        uniq.set(href, { url: href, title, image });
-      }
+      if (!uniq.has(href)) uniq.set(href, { url: href, title, image });
     }
 
     return Array.from(uniq.values());
@@ -166,7 +133,7 @@ async function sendToDiscord(webhook, items) {
     }))
     .filter((i) => i.url);
 
-  const top = cleaned.slice(0, 60);
+  const top = cleaned.slice(0, 80);
 
   console.log("DEBUG: cleaned =", cleaned.length);
   console.log("DEBUG: top URLs (first 10) =", top.slice(0, 10).map((x) => x.url));
